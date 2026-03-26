@@ -1,0 +1,7 @@
+# ManimGL (3b1b): https://github.com/3b1b/manim
+manimgl>=1.7.2
+
+numpy>=1.20
+scipy>=1.7
+trimesh
+pywavefront
