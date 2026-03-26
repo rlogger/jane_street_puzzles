@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.so
+.venv/
+venv/
+ENV/
+
+# Manim / media
+media/
+videos/
+Tex/
+texts/
+partial_movie_files/
+manim.cfg
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
