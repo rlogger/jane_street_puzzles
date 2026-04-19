@@ -1,15 +1,64 @@
 """
-Monte Carlo estimation for the Pyrknot planetary parade (6 random sky directions).
+Monte Carlo + closed-form derivation for the Pyrknot planetary parade
+(Jane Street, March 2026).
 
-  • E: all six directions lie in some open hemisphere  ⇔  0 ∉ conv{v_i}
-  • A: friend at north pole sees all six  ⇔  v_i·ê_z > 0 for all i
-  • B_δ: tower visibility  ⇔  v_i·ê_z > -sin(δ) for all i  (δ = r/R)
+Setup
+-----
+Pyrknot is a unit sphere (radius R).  Six planets sit at independent uniform
+directions v_1, …, v_6 ∈ S² and the star at an independent uniform s ∈ S².
+A friend stands at a fixed point  ẑ = (0, 0, 1)  on the surface.
 
-Estimates α ≈ P(A|E) and optionally P(B_δ|E) and β from (P(B_δ|E) - α) / δ for small δ.
+Events:
+    A   friend sees all six planets at night
+          =  { v_i · ẑ > 0  for every i }  and  { s · ẑ < 0 }
+    E   the parade is visible somewhere on Pyrknot at night
+          =  { ∃ w ∈ S² :  v_i · w > 0 ∀ i  and  s · w < 0 }
+          ⇔   the 7 directions (v_1, …, v_6, −s) all sit in some open
+                hemisphere of S².
 
-Run:
-  python pyrknot_probability.py --batches 10 --batch-size 20000
-  python pyrknot_probability.py --help
+The tower refinement (small angular horizon shift δ = r/R):
+    A_δ  friend's tower of horizon-angle δ sees all six at night
+          =  { v_i · ẑ > −sin δ ∀ i }  and  { s · ẑ < −sin δ }.
+
+Exact answer (Euler's formula on 7 great circles)
+-------------------------------------------------
+Each v_i contributes a "horizon" great circle  { w : v_i · w = 0 }  on the
+surface and s contributes the day/night terminator  { w : s · w = 0 }.  Seven
+great circles in general position form an arrangement with
+
+    V = 2 · C(7, 2) = 42         (each pair intersects in 2 antipodal points)
+    E = 7 · 12     = 84          (each circle is split into 12 arcs)
+    F = 2 − V + E  = 44          (Euler,  V − E + F = 2  on S²)
+
+— 44 spherical cells, one per realised sign pattern on the 7 normals.  The
+parade-at-night cell is the single pattern (+,+,+,+,+,+,−).
+
+For the friend at the fixed point  ẑ,  independence and uniformity give
+
+    P(A)  =  (1/2)^7  =  1/128.
+
+Wendel's theorem (d=3, n=7 i.i.d. central) says
+
+    P(E)  =  2^{-6} Σ_{k=0}^{2} C(6, k)  =  (1 + 6 + 15)/64  =  22/64  =  11/32
+         =  44 / 128,
+
+and therefore
+
+    α  :=  P(A | E)  =  (1/128) / (44/128)  =  1 / 44.
+
+Linear-in-δ expansion for the tower gives β:
+
+    P(A_δ)  =  ((1 + sin δ) / 2)^6 · ((1 − sin δ) / 2)
+           =  (1/128) · (1 + sin δ)^6 · (1 − sin δ)
+           =  (1/128) · (1 + 5 sin δ + 9 sin² δ + O(sin³ δ))
+    α(δ)   =  P(A_δ | E)  =  (1/44) · (1 + 5 sin δ + O(sin² δ))
+           =  1/44  +  (5 / 44) δ  +  O(δ²)
+⇒   β  =  5 / 44.
+
+Run
+---
+    python pyrknot_probability.py --batches 10 --batch-size 50000 --delta 0.01
+    python pyrknot_probability.py --randomize --batches 5 --batch-size 100000
 """
 
 from __future__ import annotations
@@ -25,7 +74,12 @@ import numpy as np
 try:
     from scipy.spatial import Delaunay
 except ImportError as e:
-    raise ImportError("pyrknot_probability requires scipy (e.g. pip install scipy)") from e
+    raise ImportError(
+        "pyrknot_probability requires scipy (pip install scipy)"
+    ) from e
+
+
+N0 = np.array([0.0, 0.0, 1.0])
 
 
 def unit(v: np.ndarray) -> np.ndarray:
@@ -36,63 +90,91 @@ def unit(v: np.ndarray) -> np.ndarray:
 
 
 def random_directions(n: int, rng: np.random.Generator) -> np.ndarray:
-    """Shape (n, 3) unit vectors, uniform on S² (Gaussian normalization)."""
+    """Shape ``(n, 3)`` unit vectors uniform on S² (Gaussian normalisation)."""
     raw = rng.normal(size=(n, 3))
-    norms = np.linalg.norm(raw, axis=1, keepdims=True)
-    return raw / norms
+    return raw / np.linalg.norm(raw, axis=1, keepdims=True)
 
 
-def not_in_any_open_hemisphere(pts: np.ndarray) -> bool:
+def random_star_direction(
+    rng: np.random.Generator, *, friend_at_night: bool = False
+) -> np.ndarray:
+    """Direction from Pyrknot's centre toward its star.
+
+    By default ``friend_at_night=False`` and s is uniform on all of S² —
+    the sampling regime that matches the official derivation (α = 1/44).
+
+    If ``friend_at_night=True`` the star is rejection-sampled from the
+    half-sphere  { s : s · ẑ < 0 },  so the fixed observer at ẑ is guaranteed
+    to be on the night side.  Under this extra conditioning the Monte Carlo
+    ratio  #A / #E  shifts to the subtly different  1/22  instead of  1/44,
+    and is retained only as a sanity check against the earlier model.  The
+    Manim scene passes ``True`` purely so the star is always drawn below the
+    zenith's horizon in the picture.
     """
-    True iff the six unit vectors are NOT contained in any open hemisphere,
-    i.e. iff the origin lies in their convex hull (3D).
-    pts: (6, 3)
-    """
-    assert pts.shape == (6, 3)
+    if not friend_at_night:
+        return random_directions(1, rng)[0]
+    while True:
+        s = random_directions(1, rng)[0]
+        if np.dot(s, N0) < 0:
+            return s
+
+
+def origin_in_convex_hull(pts: np.ndarray) -> bool:
+    """Whether 0 ∈ conv{pts} in R³ (equivalently: pts fit in no open hemisphere)."""
+    assert pts.ndim == 2 and pts.shape[1] == 3
+    if pts.shape[0] < 4:
+        return False
     try:
         tri = Delaunay(pts)
     except Exception:
-        # Degenerate configuration; treat as in some hemisphere (numerical edge case)
         return False
     return tri.find_simplex(np.zeros(3)) >= 0
 
 
-def hemisphere_event_E(pts: np.ndarray) -> bool:
-    """There exists a surface location from which all six are visible (some hemisphere)."""
-    return not not_in_any_open_hemisphere(pts)
+def in_some_open_hemisphere(pts: np.ndarray) -> bool:
+    return not origin_in_convex_hull(pts)
 
 
-def friend_sees_all(pts: np.ndarray, n: np.ndarray | None = None) -> bool:
-    """Observer 'up' direction n (default north pole)."""
+def parade_visible_at_night(planets: np.ndarray, star: np.ndarray) -> bool:
+    """Event E: the 7 directions (v_1, …, v_6, −s) sit in some open hemisphere."""
+    seven = np.vstack([planets, (-unit(star)).reshape(1, 3)])
+    return in_some_open_hemisphere(seven)
+
+
+def friend_sees_parade(
+    planets: np.ndarray,
+    star: np.ndarray,
+    delta: float = 0.0,
+    n: np.ndarray | None = None,
+) -> bool:
+    """Observer at n (default ẑ) with horizon-angle δ sees all six planets *at night*.
+
+    At δ = 0 this is the fixed-ground event A; for δ > 0 it is the tower
+    event A_δ (both planet bands widen by sin δ, the night band narrows by
+    the same amount — they share one threshold −sin δ).
+    """
     if n is None:
-        n = np.array([0.0, 0.0, 1.0])
-    return bool(np.all(pts @ n > 0))
+        n = N0
+    threshold = -math.sin(delta)
+    planets_ok = bool(np.all(planets @ n > threshold))
+    night_ok = bool(star @ n < threshold)
+    return planets_ok and night_ok
 
 
-def tower_sees_all(pts: np.ndarray, delta: float, n: np.ndarray | None = None) -> bool:
-    """δ = r/R small; visible iff colatitude < π/2 + δ  ⇔  v·n > cos(π/2+δ) = -sin(δ)."""
-    if n is None:
-        n = np.array([0.0, 0.0, 1.0])
-    thresh = -math.sin(delta)
-    return bool(np.all(pts @ n > thresh))
-
-
-def nearest_fraction(x: float, max_den: int = 10_000) -> tuple[Fraction, float]:
-    """Best rational approximation with denominator ≤ max_den; returns (fraction, error)."""
+def nearest_fraction(x: float, max_den: int = 1_000) -> tuple[Fraction, float]:
     f = Fraction(x).limit_denominator(max_den)
-    err = abs(float(f) - x)
-    return f, err
+    return f, abs(float(f) - x)
 
 
-def format_fraction_guess(x: float, max_den: int = 1000) -> str:
+def format_fraction_guess(x: float, max_den: int = 1_000) -> str:
     f, err = nearest_fraction(x, max_den=max_den)
     return f"{f.numerator}/{f.denominator}  (float {float(f):.8f}, err {err:.2e})"
 
 
 def get_rng_from_env() -> np.random.Generator:
-    """For Manim: PYRKNOT_RANDOMIZE=1 for fresh randomness; else PYRKNOT_SEED=int or default."""
-    env_rand = os.environ.get("PYRKNOT_RANDOMIZE", "").lower() in ("1", "true", "yes")
-    if env_rand:
+    """For Manim: ``PYRKNOT_RANDOMIZE=1`` for fresh randomness; else ``PYRKNOT_SEED``
+    or the default seed 2026."""
+    if os.environ.get("PYRKNOT_RANDOMIZE", "").lower() in ("1", "true", "yes"):
         return np.random.default_rng()
     seed_env = os.environ.get("PYRKNOT_SEED")
     if seed_env is not None:
@@ -108,26 +190,19 @@ def run_batches(
     *,
     verbose: bool = True,
 ) -> dict:
-    """
-    Accumulate counts over batches. Unconditional samples; estimate α by (#A)/(#E) among trials.
-    """
-    count_E = 0
-    count_A = 0
-    count_B_and_E = 0
-
-    total_trials = 0
+    """Sample configurations uniformly and count E, A, A_δ."""
+    count_E = count_A = count_B = trials = 0
 
     for b in range(num_batches):
-        e_batch = 0
-        a_batch = 0
-        be_batch = 0
-
+        e_batch = a_batch = b_batch = 0
         for _ in range(batch_size):
             pts = random_directions(6, rng)
-            total_trials += 1
-            e = hemisphere_event_E(pts)
-            a = friend_sees_all(pts)
-            tower = tower_sees_all(pts, delta)
+            star = random_star_direction(rng)
+            trials += 1
+
+            e = parade_visible_at_night(pts, star)
+            a = friend_sees_parade(pts, star, delta=0.0)
+            bt = friend_sees_parade(pts, star, delta=delta)
 
             if e:
                 count_E += 1
@@ -135,29 +210,28 @@ def run_batches(
             if a:
                 count_A += 1
                 a_batch += 1
-                assert e  # A ⇒ E
-            if e and tower:
-                count_B_and_E += 1
-                be_batch += 1
+            if bt:
+                count_B += 1
+                b_batch += 1
 
         if verbose:
             print(
-                f"batch {b + 1}/{num_batches}  "
-                f"E={e_batch}/{batch_size}  "
-                f"A={a_batch}/{batch_size}  "
-                f"B∩E={be_batch}/{batch_size}",
+                f"batch {b + 1:>3}/{num_batches}  "
+                f"E={e_batch:>6}/{batch_size}  "
+                f"A={a_batch:>5}/{batch_size}  "
+                f"A_δ={b_batch:>5}/{batch_size}",
                 flush=True,
             )
 
-    alpha_hat = count_A / count_E if count_E > 0 else float("nan")
-    p_B_given_E = count_B_and_E / count_E if count_E > 0 else float("nan")
-    beta_hat = (p_B_given_E - alpha_hat) / delta if delta > 0 and count_E > 0 else float("nan")
+    alpha_hat = count_A / count_E if count_E else float("nan")
+    p_B_given_E = count_B / count_E if count_E else float("nan")
+    beta_hat = (p_B_given_E - alpha_hat) / delta if delta and count_E else float("nan")
 
     return {
-        "trials": total_trials,
+        "trials": trials,
         "count_E": count_E,
         "count_A": count_A,
-        "count_B_and_E": count_B_and_E,
+        "count_B": count_B,
         "alpha_hat": alpha_hat,
         "p_B_given_E": p_B_given_E,
         "beta_hat": beta_hat,
@@ -166,33 +240,18 @@ def run_batches(
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="Monte Carlo for Pyrknot parade probabilities")
+    p = argparse.ArgumentParser(description="Monte Carlo for the Pyrknot parade")
     p.add_argument("--batch-size", type=int, default=10_000, help="trials per batch")
     p.add_argument("--batches", type=int, default=10, help="number of batches")
     p.add_argument(
         "--delta",
         type=float,
         default=0.01,
-        help="r/R for tower (use small values, e.g. 0.005–0.02, for β; "
-        "β_hat = (P(B_δ|E)-α_hat)/δ has O(δ) bias when δ is not ≪ 1)",
+        help="angular horizon shift in radians; β is the coefficient of δ in α(δ)",
     )
-    p.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help="RNG seed (default: env PYRKNOT_SEED or 2026 if unset)",
-    )
-    p.add_argument(
-        "--randomize",
-        action="store_true",
-        help="ignore seed; use nondeterministic RNG",
-    )
-    p.add_argument(
-        "--max-den",
-        type=int,
-        default=1000,
-        help="max denominator for rational guess",
-    )
+    p.add_argument("--seed", type=int, default=None, help="RNG seed")
+    p.add_argument("--randomize", action="store_true", help="nondeterministic RNG")
+    p.add_argument("--max-den", type=int, default=1_000, help="max denom for rational guess")
     args = p.parse_args(argv)
 
     if args.randomize:
@@ -203,40 +262,43 @@ def main(argv: list[str] | None = None) -> int:
         rng = get_rng_from_env()
 
     print(
-        f"Monte Carlo: {args.batches} batches × {args.batch_size} = "
-        f"{args.batches * args.batch_size} trials, δ={args.delta}",
+        f"Monte Carlo: {args.batches} batches × {args.batch_size} "
+        f"= {args.batches * args.batch_size} trials, δ={args.delta}",
         flush=True,
     )
 
-    stats = run_batches(
-        args.batch_size,
-        args.batches,
-        args.delta,
-        rng,
-        verbose=True,
-    )
+    stats = run_batches(args.batch_size, args.batches, args.delta, rng)
 
-    print("\n--- Totals ---", flush=True)
-    print(f"trials:     {stats['trials']}", flush=True)
-    print(f"count E:    {stats['count_E']}", flush=True)
-    print(f"count A:    {stats['count_A']}", flush=True)
-    print(f"count B∩E:  {stats['count_B_and_E']}", flush=True)
+    print("\n--- totals ---", flush=True)
+    print(f"trials: {stats['trials']}", flush=True)
+    print(f"count E   : {stats['count_E']}", flush=True)
+    print(f"count A   : {stats['count_A']}", flush=True)
+    print(f"count A_δ : {stats['count_B']}", flush=True)
 
     ah = stats["alpha_hat"]
-    print(f"\nα_hat = P(A|E) ≈ {ah:.8f}", flush=True)
+    print(f"\nα̂ = P(A | E) ≈ {ah:.8f}", flush=True)
     if not math.isnan(ah):
-        print(f"    nearest fraction (den≤{args.max_den}): {format_fraction_guess(ah, args.max_den)}", flush=True)
-        print(f"    exact α = 1/32 = {1/32:.8f}", flush=True)
+        print(
+            f"    nearest fraction (den ≤ {args.max_den}): "
+            f"{format_fraction_guess(ah, args.max_den)}",
+            flush=True,
+        )
+        print(f"    exact  α = 1/44 = {1 / 44:.8f}", flush=True)
 
     pbe = stats["p_B_given_E"]
     bh = stats["beta_hat"]
-    print(f"\nP(B_δ|E) ≈ {pbe:.8f}  (δ={args.delta})", flush=True)
-    print(f"β_hat = (P(B_δ|E) - α_hat) / δ ≈ {bh:.8f}", flush=True)
+    print(f"\nP(A_δ | E) ≈ {pbe:.8f}   (δ = {args.delta})", flush=True)
+    print(f"β̂ = (P(A_δ | E) − α̂) / δ ≈ {bh:.8f}", flush=True)
     if not math.isnan(bh):
-        print(f"    nearest fraction (den≤{args.max_den}): {format_fraction_guess(bh, args.max_den)}", flush=True)
-        print(f"    exact β = 3/16 = {3/16:.8f}", flush=True)
         print(
-            f"    |β_hat - 3/16| = {abs(bh - 3/16):.6f}  (reduce --delta for a tighter linearization)",
+            f"    nearest fraction (den ≤ {args.max_den}): "
+            f"{format_fraction_guess(bh, args.max_den)}",
+            flush=True,
+        )
+        print(f"    exact  β = 5/44 = {5 / 44:.8f}", flush=True)
+        print(
+            f"    |β̂ − 5/44| = {abs(bh - 5 / 44):.6f}"
+            "   (reduce --delta for a tighter linearisation)",
             flush=True,
         )
 

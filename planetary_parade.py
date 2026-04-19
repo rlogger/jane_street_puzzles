@@ -2,13 +2,16 @@
 Planetary Parade (Pyrknot) — ManimGL visualization.
 
 Math summary (see scene labels):
-  • Six random sky directions (uniform on S²). Some hemisphere contains all six
-    iff the origin is not in their convex hull (Wendel, d=3): P = 2^{-5} Σ_{k=0}^2 C(5,k) = 1/2.
-  • Friend at a fixed spot sees all six iff all lie in their celestial hemisphere: (1/2)^6.
-  • α = (1/64) / (1/2) = 1/32.
-  • Tower (small r/R = δ): planet i visible from top iff colatitude θ_i < π/2 + δ from base;
-    P(one) = (1 + sin δ)/2 ≈ 1/2 + δ/2. To first order, P(B_δ ∩ E^c) = o(δ), so
-    P(parade from tower | E) ≈ 2 · ((1+sin δ)/2)^6 ⇒ β = 3/16.
+  • Six random planet directions + star direction s (uniform on S²).  The event
+    “parade visible somewhere on Pyrknot at night” is (v_1,…,v_6,−s) ∈ some
+    open hemisphere; Wendel (n=7, d=3): P(E) = 11/32.
+  • Seven great circles (one per v_i plus one for the terminator) tile S² into
+    V=42, E=84, F=44 cells (Euler).  Friend at fixed ẑ sits in the parade-at-
+    night cell with probability (1/2)^7 = 1/128 = (1/44)·(11/32), so
+        α = P(A | E) = 1/44.
+  • Tower of horizon angle δ = r/R: widens each planet band by sin δ and
+    narrows the night band by the same amount, giving
+        α(δ) = 1/44 + (5/44) δ + O(δ²)     ⇒     β = 5/44.
 
 Run (after `source .venv/bin/activate`):
   manimgl planetary_parade.py PlanetaryParadeScene -w
@@ -17,7 +20,7 @@ Run (after `source .venv/bin/activate`):
 Random sky (Manim): set `PYRKNOT_RANDOMIZE=1` or `PYRKNOT_SEED=123`.
 
 Monte Carlo (batched, rational estimates):
-  python pyrknot_probability.py --batches 10 --batch-size 20000 --delta 0.05
+  python pyrknot_probability.py --batches 10 --batch-size 50000 --delta 0.01
   python pyrknot_probability.py --randomize --batches 5 --batch-size 100000
 """
 
@@ -34,6 +37,7 @@ if str(_ROOT) not in sys.path:
 
 from pyrknot_probability import get_rng_from_env
 from pyrknot_probability import random_directions
+from pyrknot_probability import random_star_direction
 
 from manimlib import *
 
@@ -46,6 +50,9 @@ class PlanetaryParadeScene(ThreeDScene):
         sky_r = 2.6
         rng = get_rng_from_env()
         dirs = random_directions(6, rng)
+        # Friend at zenith is on the night side: star below local horizon (s·ê_z < 0).
+        star_dir = random_star_direction(rng, friend_at_night=True)
+        anti_dir = -star_dir
         planet_colors = [RED_E, ORANGE, GREEN_E, TEAL, BLUE_E, PURPLE_E]
 
         # --- Fixed HUD ---
@@ -53,8 +60,8 @@ class PlanetaryParadeScene(ThreeDScene):
         title.to_edge(UP, buff=0.25).fix_in_frame()
 
         subtitle = Text(
-            "Six planets · random sky directions · hemisphere visibility",
-            font_size=22,
+            "Six planets + star · anti-star (−s) completes the night-sky hemisphere test",
+            font_size=20,
         )
         subtitle.next_to(title, DOWN, buff=0.15).fix_in_frame()
 
@@ -114,6 +121,19 @@ class PlanetaryParadeScene(ThreeDScene):
             p.set_color(planet_colors[i])
             planet_mobs.add(p)
 
+        star_ball = Sphere(radius=0.16, resolution=(13, 7))
+        star_ball.move_to(sky_r * star_dir)
+        star_ball.set_color("#ffcc66")
+
+        anti_ball = Sphere(radius=0.09, resolution=(11, 6))
+        anti_ball.move_to(sky_r * anti_dir)
+        anti_ball.set_color("#4466aa")
+
+        star_lbl = Text("star s", font_size=18)
+        star_lbl.next_to(star_ball, OUT * 0.3 + LEFT * 0.2)
+        anti_lbl = Text("−s (night)", font_size=16)
+        anti_lbl.next_to(anti_ball, OUT * 0.2 + RIGHT * 0.15)
+
         # Zenith and horizon reference
         zenith_arrow = Arrow(
             R * OUT * 1.05,
@@ -145,7 +165,13 @@ class PlanetaryParadeScene(ThreeDScene):
             FadeIn(zenith_arrow),
             Write(zenith_label),
         )
-        self.play(FadeIn(planet_mobs, lag_ratio=0.15))
+        self.play(
+            FadeIn(planet_mobs, lag_ratio=0.15),
+            FadeIn(star_ball),
+            FadeIn(anti_ball),
+            FadeIn(star_lbl),
+            FadeIn(anti_lbl),
+        )
         self.play(FadeIn(visible_region))
         self.wait(0.5)
 
@@ -161,15 +187,15 @@ class PlanetaryParadeScene(ThreeDScene):
 
         # --- Answer panel ---
         panel = Text(
-            "α = 1/32      β = 3/16",
+            "α = 1/44      β = 5/44",
             font_size=40,
             weight=BOLD,
         )
         panel.to_edge(DOWN, buff=0.35).fix_in_frame()
 
         note = Text(
-            "Wendel (d=3, n=6): P(some hemisphere) = 1/2  →  α = (1/2)^6 / (1/2)",
-            font_size=18,
+            "7 great circles ⇒ 44 spherical cells;  α = (1/128)/(11/32) = 1/44,  β = 5/44 (linear in δ)",
+            font_size=15,
         )
         note.next_to(panel, UP, buff=0.2).fix_in_frame()
 
